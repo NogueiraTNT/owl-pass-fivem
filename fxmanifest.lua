@@ -1,4 +1,4 @@
-fx_version 'bodacious'
+fx_version 'cerulean'
 game 'gta5'
 
 dependencies {
@@ -22,8 +22,5 @@ server_scripts {
 
 files {
     'ui/index.html',
-    'ui/style.css',
-    'ui/modal.css',
-    'ui/atm.css',
-    'ui/script.js'
+    'ui/assets/*',
 }

@@ -1,530 +1,351 @@
-function atulizar(source,user_id)  
-    local banco = vRP.getBankMoney(user_id)
-    local carteira = vRP.getMoney(user_id)
-    local identity = vRP.getUserIdentity(user_id)
-    local nome = identity.nome
-    local nomedois = identity.sobrenome
-    local current_coins = vRP.query("vrp_pass/get_coins", {user_id = user_id})
-    local coins = parseInt(current_coins[1].vip)
-    local saldo = vRP.query("vrp_pass/get_savings", {user_id = user_id})
-    local saldoPoupanca = parseInt(saldo[1].poupanca) 
-    local multas = vRP.getUData(user_id,"vRP:multas")
-    local mymultas = json.decode(multas) or 0
-    local user_pix = vRP.query("vrp_pass/get_pix_user", {user_id = user_id})
-    local pix = user_pix[1].chavePix
-    local user_photo = vRP.query("vrp_pass/get_photo", {user_id = user_id})
-    local photo = ''
-    if user_photo[1] == nil then
-        photo = 'https://require.store/img/profile.png'
-    else         
-        photo = user_photo[1].avatarURL
-    end    
+-- server/core.lua
+local Tunnel = module("vrp", "lib/Tunnel")
+local Proxy  = module("vrp", "lib/Proxy")
+vRP          = Proxy.getInterface("vRP")
+local PASS   = {}
+Tunnel.bindInterface("vrp_pass", PASS)
 
-    TriggerClientEvent("require_bank:updateData", source, saldoPoupanca, nome, nomedois, banco, carteira, pix, photo, conta)
+-- ===== Helpers =====
+
+local function ensureUserRow(user_id)
+  local r = vRP.query("owl_pass/get_user_ranking", { user_id = user_id })
+  if not r or #r == 0 then
+    vRP.execute("owl_pass/insert_user_row", { user_id = user_id })
+  end
 end
 
-RegisterServerEvent("require_bank:extratoBancario")
-AddEventHandler("require_bank:extratoBancario", function()
-    local source = source
-    local user_id = vRP.getUserId(source)
-    local transacoes = vRP.query("vrp_pass/get_transacoes", {user_id = user_id})
+local function GetXPForLevel(level)
+  -- curva configurável (usa PassConfig)
+  if level >= PassConfig.LevelMax then return math.huge end
+  return math.floor(PassConfig.XP_BASE * (level ^ PassConfig.XP_MULTIPLIER))
+end
 
-    TriggerClientEvent("require_bank:transacao", source, transacoes)
-    
-end)
+local function AddXP(user_id, amount)
+  ensureUserRow(user_id)
+  local src = vRP.getUserSource({ user_id })
+  if not src then return end
 
-RegisterServerEvent("require_bank:getData")
-AddEventHandler("require_bank:getData", function()
-    local source = source
-    local user_id = vRP.getUserId(source)
-    local banco = vRP.getBankMoney(user_id)
-    local carteira = vRP.getMoney(user_id)
-	local identity = vRP.getUserIdentity(user_id)
-    local nome = identity.nome
-	local nomedois = identity.sobrenome
-    local current_coins = vRP.query("vrp_pass/get_coins", {user_id = user_id})
-    local coins = parseInt(current_coins[1].vip)
-    local saldo = vRP.query("vrp_pass/get_savings", {user_id = user_id})
-    local saldoPoupanca = parseInt(saldo[1].poupanca)    
-    local multas = vRP.getUData(user_id,"vRP:multas")
-    local mymultas = json.decode(multas) or 0
-    local user_pix = vRP.query("vrp_pass/get_pix_user", {user_id = user_id})
-    local pix = user_pix[1].chavePix
-    local user_photo = vRP.query("vrp_pass/get_photo", {user_id = user_id})
-    local photo = ''
-    if user_photo[1] == nil then
-        photo = 'https://require.store/img/profile.png'
-    else         
-        photo = user_photo[1].avatarURL
+  local result = vRP.query("owl_pass/get_user_ranking", { user_id = user_id })
+  if not result or #result == 0 then return end
+
+  local p = result[1]
+  p.xp = p.xp + amount
+
+  local xpForNext = GetXPForLevel(p.level)
+  local leveled   = false
+
+  while p.xp >= xpForNext do
+    if p.level >= PassConfig.LevelMax then
+      p.xp = xpForNext
+      break
     end
-    local query = vRP.query("vrp_pass/get_status_cartao", {user_id = user_id})  
-    local conta = ''      
-    if query and #query > 0 then            
-        conta = 'true'
-    else 
-        conta = 'false' 
-    end
+    leveled = true
+    p.xp    = p.xp - xpForNext
+    p.level = p.level + 1
+    vRPclient.notify(src, {"~g~Subiu para o nível "..p.level.." do Passe!"})
+    xpForNext = GetXPForLevel(p.level)
+  end
 
-    TriggerClientEvent("require_bank:receiveData", source, saldoPoupanca, nome, nomedois, banco, carteira, pix, photo, conta)
-    
-end)
+  vRP.execute("owl_pass/update_user_xp_level", {
+    user_id = user_id, xp = p.xp, level = p.level
+  })
 
-RegisterServerEvent("require_bank:editarPix")
-AddEventHandler("require_bank:editarPix", function(chavePix)
-    local source = source
-    local user_id = vRP.getUserId(source)
+  vRPclient.notify(src, {"~y~+"..amount.." XP"})
 
-    vRP.execute("vrp_pass/set_pix", {user_id = user_id, chavePix = chavePix})
-    atulizar(source,user_id)
-end)
-
-local processingM = {}
--- Função Pagar Multas
-RegisterServerEvent("require_bank:PagarMultas")
-AddEventHandler("require_bank:PagarMultas", function(valor)
-    local source = source
-    local user_id = vRP.getUserId(source) 
-    local multas = vRP.getUData(user_id,"vRP:multas")
-    local mymultas = json.decode(multas)
-
-    -- Controle para evitar processamento duplicado
-    if processingM[user_id] then
-        print("Processamento já em andamento para o usuário " .. user_id)
-        return
-    end
-
-    processingM[user_id] = true 
-    
-    if valor < vRP.getBankMoney(user_id) then  
-        if valor > mymultas then
-            TriggerClientEvent("Notify",source,"negado","Você não pode pagar uma multa maior do que deve")
-        else
-
-            poupancaBankMoney(user_id, tonumber(valor))
-            local new_multas = mymultas - valor            
-		    vRP.setUData(user_id,"vRP:multas",json.encode(new_multas))
-            vRP.execute("vrp_pass/add_historico", {
-                user_id = user_id,
-                type = 'multa paga',
-                amount = tonumber(valor)
-            })
-    
-            TriggerClientEvent("Notify",source,"sucesso","Você paggou <b>"..valor.."  de Multa</b>.")
-
+  -- Atualiza UI
+  local fullData = (function()
+    local ranking_list = {}
+    local top = vRP.query("owl_pass/get_ranking", {})
+    if top and #top > 0 then
+      for i,v in ipairs(top) do
+        local idt = vRP.getUserIdentity({ v.user_id })
+        if idt then
+          ranking_list[#ranking_list+1] = {
+            lugar = tostring(i),
+            name  = idt.firstname.." "..idt.lastname,
+            id    = v.user_id,
+            xp    = v.xp,
+            level = v.level
+          }
         end
-    
-    else
-        TriggerClientEvent("Notify",source,"negado"," insuficiente na Conta Bancaria")
+      end
     end
 
-    
+    local player_data = {}
+    local pr = vRP.query("owl_pass/get_user_ranking", { user_id = user_id })
+    if pr and #pr > 0 then
+      local idt = vRP.getUserIdentity({ user_id })
+      player_data = {
+        id    = user_id,
+        name  = idt and (idt.firstname.." "..idt.lastname) or ("ID "..user_id),
+        xp    = pr[1].xp,
+        level = pr[1].level,
+        pass  = pr[1].pass
+      }
+    end
 
-    atulizar(source,user_id)
-    
-    Citizen.Wait(100) -- Pequeno delay para evitar duplicidade rápida
-    processingM[user_id] = nil -- Libera o processamento para o próximo uso
+    local all = vRP.query("owl_pass/get_all_players_ordered", {})
+    local pos = 0
+    if all and #all > 0 then
+      for i,v in ipairs(all) do
+        if v.user_id == user_id then pos = i break end
+      end
+    end
+    player_data.rankingPosition = pos
+
+    return { rankingList = ranking_list, playerData = player_data }
+  end)()
+
+  TriggerClientEvent("owl_pass:updateUIData", src, fullData)
+end
+
+-- ===== Ranking via NUI =====
+RegisterNetEvent("owl_pass:requestRanking")
+AddEventHandler("owl_pass:requestRanking", function()
+  local src = source
+  local user_id = vRP.getUserId({ src })
+  if not user_id then return end
+  ensureUserRow(user_id)
+
+  -- reaproveita o cálculo acima (parte funcional idêntica)
+  local ranking_list = {}
+  local top = vRP.query("owl_pass/get_ranking", {})
+  if top and #top > 0 then
+    for i,v in ipairs(top) do
+      local idt = vRP.getUserIdentity({ v.user_id })
+      if idt then
+        ranking_list[#ranking_list+1] = {
+          lugar = tostring(i),
+          name  = idt.firstname.." "..idt.lastname,
+          id    = v.user_id,
+          xp    = v.xp,
+          level = v.level
+        }
+      end
+    end
+  end
+
+  local player_data = {}
+  local pr = vRP.query("owl_pass/get_user_ranking", { user_id = user_id })
+  if pr and #pr > 0 then
+    local idt = vRP.getUserIdentity({ user_id })
+    player_data = {
+      id    = user_id,
+      name  = idt and (idt.firstname.." "..idt.lastname) or ("ID "..user_id),
+      xp    = pr[1].xp,
+      level = pr[1].level,
+      pass  = pr[1].pass
+    }
+  end
+
+  local all = vRP.query("owl_pass/get_all_players_ordered", {})
+  local pos = 0
+  if all and #all > 0 then
+    for i,v in ipairs(all) do
+      if v.user_id == user_id then pos = i break end
+    end
+  end
+  player_data.rankingPosition = pos
+
+  TriggerClientEvent("owl_pass:sendRanking", src, {
+    rankingList = ranking_list, playerData = player_data
+  })
 end)
 
-local processingD = {}
--- Função de Depositar
-RegisterServerEvent("require_bank:deposit")
-AddEventHandler("require_bank:deposit", function(valor)
-    local source = source
-    local user_id = vRP.getUserId(source)
-
-    -- Controle para evitar processamento duplicado
-    if processingD[user_id] then
-        print("Processamento já em andamento para o usuário " .. user_id)
-        return
-    end
-
-    processingD[user_id] = true 
-
-    if vRP.withdrawCash(user_id,valor) then
-        TriggerClientEvent("Notify",source,"negado"," insuficiente")
-    else
-        vRP.tryDeposit(user_id, tonumber(valor))
-        vRP.execute("vrp_pass/add_historico", {
-            user_id = user_id,
-            type = 'deposito',
-            amount = tonumber(valor)
+-- ===== Popular DB com PassConfig (missões) =====
+local function PopulateMissionsDatabase()
+  print("[owl_pass] conferindo catálogo de missões...")
+  local inserted = 0
+  for category, data in pairs(PassConfig.Missions) do
+    for _,m in ipairs(data.list) do
+      local r = vRP.query("owl_pass/get_mission_by_logic_type", { logic_type = m.type })
+      if #r == 0 then
+        vRP.execute("owl_pass/insert_mission", {
+          mission_type = category,
+          title       = m.title,
+          logic_type  = m.type,
+          objective   = m.objective,
+          xp_reward   = data.xp_reward,
+          reward_pool = data.reward_pool -- pode ser nil
         })
-
-        TriggerClientEvent("Notify",source,"sucesso","Você Despositou <b>"..valor.." </b>.")
+        inserted = inserted + 1
+      end
     end
-
-    
-
-    atulizar(source,user_id)
-    
-    Citizen.Wait(100) -- Pequeno delay para evitar duplicidade rápida
-    processingD[user_id] = nil -- Libera o processamento para o próximo uso
-end)
-
-local processingDP = {}
--- Função de Depositar na Poupança
-RegisterServerEvent("require_bank:colocar")
-AddEventHandler("require_bank:colocar", function(valor)
-    local source = source
-    local user_id = vRP.getUserId(source)
-    local saldoBanco = vRP.getBank(user_id)
-    local saldo = vRP.query("vrp_pass/get_savings", {user_id = user_id})
-    local saldoPoupanca = parseInt(saldo[1].poupanca)
-
-    -- Controle para evitar processamento duplicado
-    if processingDP[user_id] then
-        print("Processamento já em andamento para o usuário " .. user_id)
-        return
-    end
-
-    processingDP[user_id] = true 
-
-    if valor > saldoBanco then
-        TriggerClientEvent("Notify",source,"negado"," insuficiente na sua Conta")
-    else
-
-        local soma = saldoPoupanca + tonumber(valor)
-        vRP.execute("vrp_pass/set_poupanca", { user_id = user_id, poupanca = soma })
-        vRP.delBank(user_id,tonumber(valor))
-
-        vRP.execute("vrp_pass/add_historico", {
-            user_id = user_id,
-            type = 'deposito poupanca',
-            amount = tonumber(valor)
-        })
-
-        TriggerClientEvent("Notify",source,"sucesso","Você Despositou <b>"..valor.." </b> na sua Poupança.")
-    end
-
-    
-
-    atulizar(source,user_id)
-    
-    Citizen.Wait(100) -- Pequeno delay para evitar duplicidade rápida
-    processingDP[user_id] = nil -- Libera o processamento para o próximo uso
-end)
-
-local processingS = {}
--- Função de saque
-RegisterServerEvent("require_bank:withdraw")
-AddEventHandler("require_bank:withdraw", function(valor)
-    local source = source
-    local user_id = vRP.getUserId(source)
-
-    -- Controle para evitar processamento duplicado
-    if processingS[user_id] then
-        print("Processamento já em andamento para o usuário " .. user_id)
-        return
-    end
-
-    processingS[user_id] = true 
-
-    if valor > vRP.getBank(user_id) then
-        TriggerClientEvent("Notify",source,"negado"," insuficiente")
-    else
-        vRP.withdrawCash(user_id,tonumber(valor))
-        vRP.execute("vrp_pass/add_historico", {
-            user_id = user_id,
-            type = 'saque',
-            amount = tonumber(valor)
-        })
-
-        TriggerClientEvent("Notify",source,"sucesso","Você Sacou <b>"..valor.." </b>.")
-    end    
-
-    atulizar(source,user_id)
-    
-    Citizen.Wait(100) -- Pequeno delay para evitar duplicidade rápida
-    processingS[user_id] = nil -- Libera o processamento para o próximo uso
-end)
-
-local processingSP = {}
--- Função de saque da poupanca
-RegisterServerEvent("require_bank:saquep")
-AddEventHandler("require_bank:saquep", function(valor)
-    local source = source
-    local user_id = vRP.getUserId(source)
-    local banco = vRP.getBank(user_id)
-    local saldo = vRP.query("vrp_pass/get_savings", {user_id = user_id})
-    local saldoPoupanca = parseInt(saldo[1].poupanca)
-
-    -- Controle para evitar processamento duplicado
-    if processingSP[user_id] then
-        print("Processamento já em andamento para o usuário " .. user_id)
-        return
-    end
-
-    processingSP[user_id] = true 
-
-    if valor > saldoPoupanca then
-        TriggerClientEvent("Notify",source,"negado"," insuficiente na Poupança")
-    else        
-        local saldoPoupanca = saldo[1].poupanca        
-        local banco = vRP.getBankMoney(user_id) 
-        local sub = saldoPoupanca - tonumber(valor)
-        vRP.execute("vrp_pass/set_poupanca", { user_id = user_id, poupanca = sub })
-        vRP.addBank(user_id,tonumber(valor))
-        vRP.execute("vrp_pass/add_historico", {
-            user_id = user_id,
-            type = 'saque poupanca',
-            amount = tonumber(valor)
-        })
-
-        TriggerClientEvent("Notify",source,"sucesso","Você Retirou <b>"..valor.." </b> da conta Poupança.")
-    end
-
-    atulizar(source,user_id)
-    
-    Citizen.Wait(100) -- Pequeno delay para evitar duplicidade rápida
-    processingSP[user_id] = nil -- Libera o processamento para o próximo uso
-end)
-
-local processingP = {}
-RegisterServerEvent('require_bank:pix')
-AddEventHandler('require_bank:pix', function(chavePix,valor)
-	local source = source
-	local user_id = vRP.getUserId(source)
-	local identity = vRP.getUserIdentity(user_id) 
-    local nplayer = vRP.query("vrp_pass/get_pix", {chavePix = chavePix})
-	local nuser_id = nplayer[1].id 
-    local source2 = vRP.getUserSource(nuser_id)
-	local identitynu = vRP.getUserIdentity(nuser_id)
-	local banco = 0
-
-    -- Controle para evitar processamento duplicado
-    if processingP[user_id] then
-        print("Processamento já em andamento para o usuário " .. user_id)
-        return
-    end
-
-    processingP[user_id] = true
-
-	if nuser_id == nil then
-		TriggerClientEvent("Notify",source,"negado","Passaporte inválido ou indisponível.")
-	else
-		if nuser_id == user_id then
-			TriggerClientEvent("Notify",source,"negado","Você não pode transferir dinheiro para sí mesmo.")	
-		else
-			local banco = vRP.getBank(user_id)
-			local banconu = vRP.getBank(nuser_id)
-			
-			if banco <= 0 or banco < tonumber(valor) or tonumber(valor) <= 0 then
-				TriggerClientEvent("Notify",source,"negado"," Insuficiente")
-			else
-				vRP.delBank(user_id,tonumber(valor))
-				vRP.addBank(nuser_id,tonumber(valor))
-                vRP.execute("vrp_pass/add_historico", {
-                    user_id = user_id,
-                    type = 'pix',
-                    amount = valor
-                })
-                
-                atulizar(source,user_id)            
-				TriggerClientEvent("Notify",source2,"sucesso","<b>"..identity.nome.." "..identity.sobrenome.."</b> depositou <b>"..valor.." </b> na sua conta.")
-				TriggerClientEvent("Notify",source,"sucesso","Você transferiu <b>"..valor.." </b> para conta de <b>"..identitynu.nome.." "..identitynu.sobrenome.."</b>.")
-			end
-		end
-    end
-
-    -- Limpa o controle de processamento após a transação
-    Citizen.Wait(100) -- Pequeno delay para evitar duplicidade rápida
-    processingP[user_id] = nil
-end)
-
--- Função para solicitar crédito
-RegisterServerEvent("require_bank:solicitarCredito")
-AddEventHandler("require_bank:solicitarCredito", function(valor)
-    local source = source
-    local user_id = vRP.getUserId(source)    
-
-    vRP.giveInventoryItem(parseInt(user_id), 'cartao-debito', 1) -- apenas se dê tudo certo
-    
-    -- local salario = vRP.getSData({user_id, "vRP:salary"}) or 0  -- Exemplo de como obter salário
-
-    -- if salario >= Config.MinSalarioCredito then
-    --     if valor <= Config.CreditoMaximo then
-    --         vRP.giveBankMoney({user_id, valor})
-    --         MySQL.Async.execute("INSERT INTO bank_history (user_id, type, amount, date) VALUES (@user_id, 'credito', @amount, NOW())", {
-    --             ['@user_id'] = user_id,
-    --             ['@amount'] = valor
-    --         })
-    --         TriggerClientEvent("require_bank:creditoSuccess", source, valor)
-    --     else
-    --         TriggerClientEvent("require_bank:creditoFail", source, "Valor de crédito acima do limite.")
-    --     end
-    -- else
-    --     TriggerClientEvent("require_bank:creditoFail", source, "Salário insuficiente para crédito.")
-    -- end
-end)
+  end
+  if inserted > 0 then
+    print("[owl_pass] "..inserted.." missões inseridas.")
+  else
+    print("[owl_pass] catálogo OK, sem novidades.")
+  end
+end
 
 Citizen.CreateThread(function()
-    local rendimento = BankConfig.Rendimento
-
-    while true do
-        Citizen.Wait(21600000) -- A cada 24 horas (86400000 milissegundos)
-
-        local allUsers = vRP.query("vrp_pass/get_all_users")
-        for _, user in ipairs(allUsers) do
-            local user_id = user.user_id
-            local saldo = vRP.query("vrp_pass/get_savings", { user_id = user_id })
-
-            if saldo and #saldo > 0 then
-                local saldoPoupanca = saldo[1].poupanca
-                local rendimentoAplicado = saldoPoupanca * rendimento
-                local novoSaldo = saldoPoupanca + rendimentoAplicado
-                vRP.execute("vrp_pass/set_poupanca", { user_id = user_id, poupanca = novoSaldo })
-            end
-        end
-    end
+  Citizen.Wait(3000)
+  PopulateMissionsDatabase()
 end)
 
--- vRP.getInventoryItemAmount(user_id, 'tablet')
-RegisterTunnel.statusCartao = function()
-	local source = source
-	local user_id = vRP.getUserId(source)
-    local query = vRP.query("vrp_pass/get_status_cartao", {user_id = user_id})  
-    if query and #query > 0 then
-        if query[1].status == 'bloqueado' then
-            return false
-        elseif query[1].status == 'desbloqueado' then
-            return true
-        end
-    end
-end
+-- ===== NUI: listar missões + progresso real =====
+RegisterNetEvent("owl_pass:requestMissions")
+AddEventHandler("owl_pass:requestMissions", function(missionType)
+  local src = source
+  local user_id = vRP.getUserId({ src })
+  if not user_id then return end
+  ensureUserRow(user_id)
 
-RegisterTunnel.mudarCartao = function(mudarStatus)
-	local source = source
-	local user_id = vRP.getUserId(source)
-    local query = vRP.query("vrp_pass/get_status_cartao", {user_id = user_id})    
-    if vRP.getInventoryItemAmount(user_id, 'cartao-debito') >= 1 then     
-        if query and #query > 0 then
-            if query[1].status == 'bloqueado' then
-                TriggerClientEvent("Notify",source,"sucesso","Você desbloqueou o seu cartão com Sucesso!",5000)
-                vRP.execute("vrp_pass/up_status_cartao", {status = 'desbloqueado', user_id = user_id}) 
-            elseif query[1].status == 'desbloqueado' then
-                TriggerClientEvent("Notify",source,"sucesso","Você bloqueou o seu cartão com Sucesso!",5000)
-                vRP.execute("vrp_pass/up_status_cartao", {status = 'bloqueado', user_id = user_id}) 
-            end
-        end
-    end
-end
+  local missions_with_progress = {}
+  local cat = PassConfig.Missions[missionType]
+  if not cat then
+    TriggerClientEvent("owl_pass:sendMissions", src, missions_with_progress)
+    return
+  end
 
-RegisterTunnel.segundaVia = function()
-	local source = source
-	local user_id = vRP.getUserId(source)
-    local query = vRP.query("vrp_pass/get_status_cartao", {user_id = user_id})    
-    if vRP.getInventoryItemAmount(user_id, 'cartao-debito') == 0 then     
-        if query and #query > 0 then            
-            vRP.giveInventoryItem(user_id, 'cartao-debito', 1, true)
-            TriggerClientEvent("Notify",source,"sucesso","Você recebeu a segunda via do seu cartão!",5000)
-        end
+  for _, mission in ipairs(cat.list) do
+    local prog = vRP.query("owl_pass/get_player_progress", { user_id = user_id, mission_id = mission.id })
+    local progress, completed = 0, false
+    if #prog > 0 then
+      progress  = prog[1].progress
+      completed = (prog[1].completed == 1)
     end
-end
+    missions_with_progress[#missions_with_progress+1] = {
+      id = mission.id,
+      title = mission.title,
+      objective = mission.objective,
+      xp = cat.xp_reward,
+      progress = progress,
+      completed = completed
+    }
+  end
 
-RegisterServerEvent("require_bank:contas")
-AddEventHandler("require_bank:contas", function(valor, senha)
-    local source = source
-    local user_id = vRP.getUserId(source)  
-    local query = vRP.query("vrp_pass/get_status_cartao", {user_id = user_id})    
-    if vRP.getInventoryItemAmount(user_id, 'cartao-debito') == 0 then     
-        if query and #query > 0 then  
-            TriggerClientEvent("Notify",source,"sucesso","Você editou seus dados!",5000)          
-            vRP.execute("vrp_pass/update_conta", {
-                user_id = user_id, 
-                login = valor, 
-                senha = senha
-            })
-        else           
-            vRP.giveInventoryItem(user_id, 'cartao-debito', 1, true)
-            TriggerClientEvent("Notify",source,"sucesso","Você recebeu o cartão da sua conta!",5000)
-            vRP.execute("vrp_pass/insert_conta", {
-                user_id = user_id, 
-                login = valor, 
-                senha = senha
-            })            
-        end
-    else     
-        if query and #query > 0 then  
-            TriggerClientEvent("Notify",source,"sucesso","Você editou seus dados!",5000)          
-            vRP.execute("vrp_pass/update_conta", {
-                user_id = user_id, 
-                login = valor, 
-                senha = senha
-            })
-        end 
-    end
+  TriggerClientEvent("owl_pass:sendMissions", src, missions_with_progress)
 end)
 
-local usersLogged = {}
-local timeout = 300 -- Tempo em segundos antes do logout automático (5 minutos)
+-- ===== Progresso (manual via NUI ou hooks automáticos) =====
+RegisterNetEvent("owl_pass:updateProgress")
+AddEventHandler("owl_pass:updateProgress", function(mission_id, amount)
+  local src = source
+  local user_id = vRP.getUserId({ src })
+  if not user_id then return end
+  ensureUserRow(user_id)
 
-RegisterServerEvent("require_bank:login")
-AddEventHandler("require_bank:login", function(login, senha)
-    local source = source
-    local user_id = vRP.getUserId(source) -- Obtém o ID do usuário no sistema vRP
-    local query = vRP.query("vrp_pass/get_status_cartao", {user_id = user_id}) 
-    if user_id then
-        local result = vRP.query("vrp_pass/get_conta", {
-            login = login,
-            senha = senha
-        })           
-        if vRP.getInventoryItemAmount(user_id, 'cartao-debito') >= 1 then  
-            if #result > 0 then
-                if result[1].user_id == user_id then 
-                    if result[1].status == 'desbloqueado' then
-                        usersLogged[user_id] = { time = os.time(), source = source }
-                        local banco = vRP.getBankMoney(result[1].user_id)
-                        local carteira = vRP.getMoney(result[1].user_id)
-                        local identity = vRP.getUserIdentity(result[1].user_id)
-                        local nome = identity.nome
-                        local nomedois = identity.sobrenome
-                        local saldo = vRP.query("vrp_pass/get_savings", {user_id = result[1].user_id})
-                        local saldoPoupanca = parseInt(saldo[1].poupanca)                      
-                        TriggerClientEvent("require_bank:loginSuccess", source, saldoPoupanca, nome, nomedois, banco, carteira)
-                    elseif result[1].status == 'bloqueado' then 
-                        TriggerClientEvent("require_bank:loginFail", source)                
-                        TriggerClientEvent("Notify",source,"negado","Você não pode acessar uma conta bloqueda!",5000)
-                    end
-                else
-                    TriggerClientEvent("require_bank:loginFail", source)
-                    TriggerClientEvent("Notify",source,"negado","Você não pode acessar essa conta com essa cartão!",5000)
-                end
-            else
-                TriggerClientEvent("require_bank:loginFail", source)
-            end
-        elseif vRP.getInventoryItemAmount(user_id, 'cartao-clonado') >= 1 then
-            -- ainda vou fazer essa logica
-        end
-    end
+  local mission = vRP.query("owl_pass/get_mission_by_id", { id = mission_id })
+  if not mission or #mission == 0 then return end
+  mission = mission[1]
+
+  local prog = vRP.query("owl_pass/get_player_progress", { user_id = user_id, mission_id = mission_id })
+  if #prog == 0 then
+    vRP.execute("owl_pass/insert_progress", {
+      user_id = user_id,
+      mission_id = mission_id,
+      progress = amount,
+      completed = (amount >= mission.objective) and 1 or 0
+    })
+  else
+    local newProgress = prog[1].progress + amount
+    local completed = (newProgress >= mission.objective) and 1 or 0
+    vRP.execute("owl_pass/update_progress", {
+      user_id = user_id,
+      mission_id = mission_id,
+      progress = newProgress,
+      completed = completed
+    })
+  end
 end)
 
--- Deslogar automaticamente após tempo de inatividade
-CreateThread(function()
-    while true do
-        Wait(60000) -- Verifica a cada 60 segundos
-        local currentTime = os.time()
-        for user_id, data in pairs(usersLogged) do
-            if (currentTime - data.time) >= timeout then
-                usersLogged[user_id] = nil
-                TriggerClientEvent("require_bank:logout", data.source)
-            end
-        end
-    end
+-- ===== Completar missão (dá XP usando AddXP unificado) =====
+RegisterNetEvent("owl_pass:completeMission")
+AddEventHandler("owl_pass:completeMission", function(mission_id)
+  local src = source
+  local user_id = vRP.getUserId({ src })
+  if not user_id then return end
+  ensureUserRow(user_id)
+
+  local mission = vRP.query("owl_pass/get_mission_by_id", { id = mission_id })
+  if not mission or #mission == 0 then return end
+  mission = mission[1]
+
+  local prog = vRP.query("owl_pass/get_player_progress", { user_id = user_id, mission_id = mission_id })
+  if #prog > 0 and prog[1].completed == 1 then
+    AddXP(user_id, mission.xp_reward)
+    vRPclient.notify(src, {"~g~Missão concluída: "..mission.title.." (+"..mission.xp_reward.." XP)"})
+  end
 end)
 
-AddEventHandler("playerDropped", function()
-    local src = source
-    local user_id = vRP.getUserId(src)
-    if user_id and usersLogged[user_id] then
-        usersLogged[user_id] = nil
-    end
+-- ===== Recompensas por nível =====
+RegisterNetEvent("owl_pass:claimReward")
+AddEventHandler("owl_pass:claimReward", function(reward_id)
+  local src = source
+  local user_id = vRP.getUserId({ src })
+  if not user_id then return end
+  ensureUserRow(user_id)
+
+  local reward = vRP.query("owl_pass/get_reward", { reward_id = reward_id })
+  if not reward or #reward == 0 then return end
+  reward = reward[1]
+
+  local claimed = vRP.query("owl_pass/check_claimed_reward", { user_id = user_id, reward_id = reward_id })
+  if #claimed > 0 then
+    vRPclient.notify(src, {"~r~Você já resgatou essa recompensa!"})
+    return
+  end
+
+  vRP.execute("owl_pass/insert_claimed_reward", { user_id = user_id, reward_id = reward_id })
+
+  if reward.reward_type == "money" then
+    vRP.giveMoney({ user_id, reward.reward_amount })
+  elseif reward.reward_type == "item" then
+    vRP.giveInventoryItem({ user_id, reward.reward_name, reward.reward_amount, true })
+  elseif reward.reward_type == "vehicle" then
+    -- adapte ao seu garage
+    TriggerEvent("vrp:spawnVehicleForPlayer", user_id, reward.reward_name)
+  end
+
+  vRPclient.notify(src, {"~y~Recompensa: "..reward.reward_name.." x"..reward.reward_amount})
 end)
 
-RegisterServerEvent("require_bank:updateActivity")
-AddEventHandler("require_bank:updateActivity", function()
-    local src = source
-    local user_id = vRP.getUserId(src)
-    if user_id and usersLogged[user_id] then
-        usersLogged[user_id].time = os.time()
+-- ===== Hook automático por lógica (incrementa progresso em massa por logic_type)
+-- Chame este evento quando acontecer uma ação no servidor: ex: entregou carga, multou player, etc.
+RegisterNetEvent("owl_pass:missionActionCompleted")
+AddEventHandler("owl_pass:missionActionCompleted", function(logic_type, amount)
+  local src = source
+  local user_id = vRP.getUserId({ src })
+  if not user_id then return end
+  ensureUserRow(user_id)
+
+  local amt = tonumber(amount) or 1
+  local missions = vRP.query("owl_pass/get_missions_by_logic", { logic_type = logic_type })
+  if not missions or #missions == 0 then return end
+
+  for _,m in ipairs(missions) do
+    local prog = vRP.query("owl_pass/get_player_progress", { user_id = user_id, mission_id = m.id })
+    if #prog == 0 then
+      vRP.execute("owl_pass/insert_progress", {
+        user_id = user_id,
+        mission_id = m.id,
+        progress = math.min(amt, m.objective),
+        completed = (amt >= m.objective) and 1 or 0
+      })
+    else
+      local newProgress = math.min(prog[1].progress + amt, m.objective)
+      local completed   = (newProgress >= m.objective) and 1 or 0
+      vRP.execute("owl_pass/update_progress", {
+        user_id = user_id,
+        mission_id = m.id,
+        progress = newProgress,
+        completed = completed
+      })
     end
+  end
+end)
+
+-- ===== Reset diário simples (00:00)
+Citizen.CreateThread(function()
+  while true do
+    Citizen.Wait(60000)
+    local hora = os.date("%H:%M")
+    if hora == "00:00" then
+      vRP.execute("owl_pass/reset_daily", {})
+      print("[owl_pass] diárias resetadas.")
+      Citizen.Wait(60000)
+    end
+  end
 end)

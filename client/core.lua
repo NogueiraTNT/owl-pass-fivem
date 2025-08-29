@@ -1,115 +1,72 @@
--- Evento para receber dados do Pass
-RegisterNetEvent("owl_pass:receiveData")
-AddEventHandler("owl_pass:receiveData", function(saldoPoupanca, nome, nomedois, Pass, carteira, pix, photo, conta) 
-    SendNUIMessage({
-        type = "updateBankData",
-        saldoPoupanca = saldoPoupanca,
-        nome = nome,
-        nomedois = nomedois,
-        Pass = Pass,
-        carteira = carteira,
-        pix = pix,
-        photo = photo,
-        conta = conta
-    })
+-- client/core.lua
+local Proxy = module("vrp", "lib/Proxy")
+local Tunnel = module("vrp", "lib/Tunnel")
+vRP = Proxy.getInterface("vRP")
+
+-- (opcional) interface se você quiser métodos Tunnel depois
+-- local PASSserver = Tunnel.getInterface("vrp_pass")
+
+local uiAberto = false
+
+RegisterCommand(PassConfig.comand, function()
+  uiAberto = not uiAberto
+  SetNuiFocus(uiAberto, uiAberto)
+  if uiAberto then
+    TriggerServerEvent("owl_pass:requestRanking")
+  end
+end, false)
+
+RegisterNetEvent("owl_pass:sendRanking")
+AddEventHandler("owl_pass:sendRanking", function(fullData)
+  if uiAberto then
+    SendNUIMessage({ action = "showUI", data = fullData })
+  end
 end)
 
-
--- Extrato Bancario
-RegisterNUICallback("extrato", function()
-    TriggerServerEvent("owl_pass:extratoBancario")
+RegisterNUICallback('closeUI', function(_, cb)
+  uiAberto = false
+  SetNuiFocus(false, false)
+  cb({ ok = true })
 end)
 
--- Solicitar Credito
-RegisterNUICallback("solicitar", function(data, cb)
-    local valor = tonumber(data.valor)
-    if valor and valor > 0 then
-        TriggerServerEvent("owl_pass:solicitarCredito", valor)
-    end
+RegisterNUICallback('getMissions', function(data, cb)
+  local missionType = data.missionType -- "Season","Specials","Daily"
+  TriggerServerEvent("owl_pass:requestMissions", missionType)
+  cb({ ok = true })
 end)
 
--- Pagar Multas
-RegisterNUICallback("multas", function(data, cb)
-    local valor = tonumber(data.valor)
-    if valor and valor > 0 then
-        TriggerServerEvent("owl_pass:PagarMultas", valor)
-    end
+RegisterNetEvent("owl_pass:sendMissions")
+AddEventHandler("owl_pass:sendMissions", function(missions_with_progress)
+  if not uiAberto then return end
+  SendNUIMessage({ action = "updateMissions", data = missions_with_progress })
 end)
 
-RegisterNUICallback("depositar", function(data, cb)
-    local valor = tonumber(data.valor)
-    if valor and valor > 0 then
-        TriggerServerEvent("owl_pass:deposit", valor)
-    end
+RegisterNUICallback('completeMission', function(data, cb)
+  if data and data.mission_id then
+    TriggerServerEvent("owl_pass:completeMission", data.mission_id)
+  end
+  cb({ ok = true })
 end)
 
-RegisterNUICallback("sacar", function(data, cb)
-    local valor = tonumber(data.valor)
-    if valor and valor > 0 then
-        TriggerServerEvent("owl_pass:withdraw", valor)
-    end
-    cb("ok")
+RegisterNUICallback('claimReward', function(data, cb)
+  if data and data.reward_id then
+    TriggerServerEvent("owl_pass:claimReward", data.reward_id)
+  end
+  cb({ ok = true })
 end)
 
-RegisterNUICallback("colocar", function(data, cb)
-    local valor = tonumber(data.valor)
-    if valor and valor > 0 then
-        TriggerServerEvent("owl_pass:colocar", valor)
-    end
+-- Exemplo de hook: quando um evento do jogo rolar no client, avisa o server.
+-- Use o logic_type que você definiu no PassConfig (ex.: "job_delivery","police","fishing"...)
+-- TriggerServerEvent("owl_pass:missionActionCompleted", "job_delivery", 1)
+
+RegisterNetEvent("owl_pass:updateUIData")
+AddEventHandler("owl_pass:updateUIData", function(fullData)
+  if uiAberto then
+    SendNUIMessage({ action = "updateData", data = fullData })
+  end
 end)
 
-RegisterNUICallback("retirar", function(data, cb)
-    local valor = tonumber(data.valor)
-    if valor and valor > 0 then
-        TriggerServerEvent("owl_pass:saquep", valor)
-    end
-    cb("ok")
-end)
-
-RegisterNUICallback('realizarPix', function(data, cb)
-    local to = data.targetUserId
-    local valor = tonumber(data.valor)
-    TriggerServerEvent("owl_pass:pix", to, valor)
-end)
-
-RegisterNUICallback('editarPix', function(data, cb)
-    local to = data.newPix
-    TriggerServerEvent("owl_pass:editarPix", to)
-end)
-
-RegisterCommand(PassConfig.comand, function (data, cb)
-    SetNuiFocus(true, true)
-    SendNUIMessage({type = "openBank"})
-    TriggerServerEvent("owl_pass:getData") 
-    cb("ok")
-end)
-
--- Comando para fechar o Pass
-RegisterNUICallback("fecharPass", function(data, cb)
-    SetNuiFocus(false, false)
-    cb("ok")
-end)
-
-RegisterNetEvent("owl_pass:updateData")
-AddEventHandler("owl_pass:updateData", function(saldoPoupanca, nome, nomedois, Pass, carteira, pix, photo, conta)
-    SendNUIMessage({
-        type = "updateBankData",
-        saldoPoupanca = saldoPoupanca,
-        nome = nome,
-        nomedois = nomedois,
-        Pass = Pass,
-        carteira = carteira,
-        pix = pix,
-        photo = photo,
-        conta = conta
-    })
-end)
-
--- Evento para atualizar dados do Pass
-RegisterNetEvent("owl_pass:transacao")
-AddEventHandler("owl_pass:transacao", function(transacoes)
-    SendNUIMessage({
-        type = "transacaoBank",
-        transacoes = transacoes
-    })
+RegisterNUICallback('addPremium', function(data, cb)
+  print(data)
+  cb({ ok = true })
 end)

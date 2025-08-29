@@ -1,8 +1,5 @@
-bankModule = {}
-local Tunnel = module("vrp", "lib/Tunnel")
 local Proxy = module("vrp", "lib/Proxy")
+local Tunnel = module("vrp", "lib/Tunnel")
 vRP = Proxy.getInterface("vRP")
-bankServer = Tunnel.getInterface("require_bank")
-Tunnel.bindInterface("require_bank", bankModule)
-Proxy.addInterface("require_bank", bankModule)
-Remote = Tunnel.getInterface('require_bank')
+
+vRPserver = Tunnel.getInterface("vrp_pass", "vrp_pass")
